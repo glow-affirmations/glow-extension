@@ -164,4 +164,32 @@ describe("extension Community conversation continuity", () => {
     expect(communitySource).toContain("advanceChatReadCursor(");
     expect(communitySource).toContain("parseCommunityChatReadCursorChange");
   });
+
+  test("keeps Community onboarding and membership refresh inside the extension", () => {
+    expect(viewSource).toContain('type: "joinCommunity"');
+    expect(viewSource).toContain('type: "refreshCommunityMembership"');
+    expect(viewSource).toContain("Join the community");
+    expect(viewSource).toContain("Already joined? Refresh");
+    expect(panelSource).toContain("private async joinCommunity(");
+    expect(panelSource).toContain("suggestedCommunityHandle(user, membership)");
+    expect(panelSource).not.toContain("openCommunityOnWeb");
+    expect(panelSource).not.toContain("COMMUNITY_URL");
+    expect(panelSource).not.toContain("vscode.env.openExternal");
+    expect(viewSource).not.toContain("openCommunityOnWeb");
+  });
+
+  test("supports the Community lifecycle through native extension controls", () => {
+    expect(viewSource).toContain('type: "updateCommunityProfile"');
+    expect(viewSource).toContain('type: "loadCommunityComposer"');
+    expect(viewSource).toContain('type: "shareCommunityAffirmation"');
+    expect(viewSource).toContain('type: "reportCommunityMessage"');
+    expect(viewSource).toContain('type: "setCommunityBlock"');
+    expect(viewSource).toContain("Edit profile");
+    expect(viewSource).toContain('aria-label="Share an affirmation"');
+    expect(panelSource).toContain("private async updateProfile(");
+    expect(panelSource).toContain("private async loadComposer(");
+    expect(panelSource).toContain("private async shareAffirmation(");
+    expect(panelSource).toContain("private async reportMessage(");
+    expect(panelSource).toContain("private async setBlock(");
+  });
 });

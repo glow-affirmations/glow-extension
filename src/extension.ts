@@ -71,9 +71,17 @@ import {
   type CommunityDeleteResult,
   type CommunityFeedPage,
   type CommunityLibraryImportResult,
+  type CommunityBlockResult,
+  type CommunityJoinInput,
+  type CommunityJoinResult,
   type CommunityMembership,
   type CommunityMemberProfile,
+  type CommunityProfileUpdateInput,
+  type CommunityReportReason,
+  type CommunityReportResult,
   type CommunityReactionResult,
+  type CommunityShareableAffirmation,
+  type CommunityShareResult,
 } from "./community.js";
 import { GlowCommunityPanel } from "./communityPanel.js";
 
@@ -346,10 +354,18 @@ export function activate(context: vscode.ExtensionContext): void {
           ),
         ),
       membership: () => library.loadCommunityMembership(),
+      join: (input) => library.joinCommunity(input),
       affirmations: (cursor) => library.loadCommunityAffirmations(cursor),
       profile: (handle) => library.loadCommunityProfile(handle),
+      updateProfile: (input) => library.updateCommunityProfile(input),
       profileAffirmations: (handle, cursor) =>
         library.loadCommunityProfileAffirmations(handle, cursor),
+      shareableAffirmations: () => library.loadShareableCommunityAffirmations(),
+      shareAffirmation: (sourceAffirmationId, clientNonce) =>
+        library.shareCommunityAffirmation(sourceAffirmationId, clientNonce),
+      reportMessage: (messageId, reason, details) =>
+        library.reportCommunityMessage(messageId, reason, details),
+      setBlock: (userId, blocked) => library.setCommunityBlock(userId, blocked),
       chatChannels: () => library.loadCommunityChatChannels(),
       chatMessages: (channel, cursor) =>
         library.loadCommunityChatMessages(channel, cursor),
@@ -601,6 +617,10 @@ class SolLibraryService implements vscode.Disposable {
     return this.communityClient.membership();
   }
 
+  joinCommunity(input: CommunityJoinInput): Promise<CommunityJoinResult> {
+    return this.communityClient.join(input);
+  }
+
   loadCommunityAffirmations(
     cursor: string | null = null,
   ): Promise<CommunityFeedPage> {
@@ -609,6 +629,43 @@ class SolLibraryService implements vscode.Disposable {
 
   loadCommunityProfile(handle: string): Promise<CommunityMemberProfile> {
     return this.communityClient.profile(handle);
+  }
+
+  updateCommunityProfile(
+    input: CommunityProfileUpdateInput,
+  ): Promise<CommunityMemberProfile> {
+    return this.communityClient.updateProfile(input);
+  }
+
+  loadShareableCommunityAffirmations(): Promise<
+    CommunityShareableAffirmation[]
+  > {
+    return this.communityClient.shareableAffirmations();
+  }
+
+  shareCommunityAffirmation(
+    sourceAffirmationId: string,
+    clientNonce: string,
+  ): Promise<CommunityShareResult> {
+    return this.communityClient.shareAffirmation(
+      sourceAffirmationId,
+      clientNonce,
+    );
+  }
+
+  reportCommunityMessage(
+    messageId: string,
+    reason: CommunityReportReason,
+    details?: string,
+  ): Promise<CommunityReportResult> {
+    return this.communityClient.reportMessage(messageId, reason, details);
+  }
+
+  setCommunityBlock(
+    userId: string,
+    blocked: boolean,
+  ): Promise<CommunityBlockResult> {
+    return this.communityClient.setBlock(userId, blocked);
   }
 
   loadCommunityProfileAffirmations(

@@ -23,6 +23,8 @@
     CommunityChatMessage,
     CommunityHostApi,
     CommunityMemberProfile,
+    CommunityReportReason,
+    CommunityShareableAffirmation,
     CommunityViewState,
     ExtensionToCommunityMessage,
   } from "$lib/host";
@@ -58,9 +60,19 @@
     | { status: "loading"; handle: string }
     | { status: "ready"; profile: CommunityMemberProfile }
     | { status: "error"; handle: string; message: string };
+  type ProfileDraft = {
+    handle: string;
+    displayName: string;
+    bio: string;
+    avatarUrl: string;
+  };
   const tones = ["clay", "moss", "dusk", "amber", "plum", "stone"] as const;
 
   let viewState = $state<CommunityViewState>({ status: "loading" });
+  let joinHandle = $state("");
+  let joinPending = $state(false);
+  let joinError = $state("");
+  let joinHandleEditable = $state(false);
   let activeTab = $state<"affirmations" | "chats">("affirmations");
   let items = $state<CommunityAffirmationFeedItem[]>([]);
   let nextCursor = $state<string | null>(null);
@@ -70,6 +82,29 @@
   let profileItems = $state<CommunityAffirmationFeedItem[]>([]);
   let profileNextCursor = $state<string | null>(null);
   let profilePageLoading = $state(false);
+  let profileEditing = $state(false);
+  let profileUpdatePending = $state(false);
+  let profileUpdateError = $state("");
+  let profileDraft = $state<ProfileDraft>({
+    handle: "",
+    displayName: "",
+    bio: "",
+    avatarUrl: "",
+  });
+  let composerOpen = $state(false);
+  let composerLoading = $state(false);
+  let composerItems = $state<CommunityShareableAffirmation[]>([]);
+  let composerSelectedId = $state("");
+  let composerError = $state("");
+  let composerPending = $state(false);
+  let reportTarget = $state<{ id: string; handle: string } | null>(null);
+  let reportReason = $state<CommunityReportReason>("spam");
+  let reportDetails = $state("");
+  let reportPending = $state(false);
+  let reportError = $state("");
+  let blockTarget = $state<{ userId: string; handle: string } | null>(null);
+  let blockPending = $state(false);
+  let blockError = $state("");
   let chatChannels = $state<CommunityChatChannel[]>([]);
   let activeChatChannel = $state<CommunityChatChannelSlug | null>(null);
   let chatItems = $state<ChatUiMessage[]>([]);
@@ -125,16 +160,34 @@
       online = navigator.onLine;
       hostApi.postMessage({ type: "communityNetworkStatus", online });
     };
+    const handleWindowFocus = () => {
+      queueVisibleChatReadAcknowledgement();
+      if (viewState.status === "not_member" && online && !joinPending) {
+        hostApi.postMessage({ type: "refreshCommunityMembership" });
+      }
+    };
     const handleMessage = (event: MessageEvent<ExtensionToCommunityMessage>) => {
       const message = event.data;
       switch (message.type) {
         case "communityState":
+          {
+          const previousState = viewState;
           viewState = message.state;
           profileView = { status: "closed" };
           profileItems = [];
           profileNextCursor = null;
           profilePageLoading = false;
+          if (message.state.status === "not_member") {
+            if (previousState.status !== "not_member") {
+              joinHandle = message.state.suggestedHandle;
+              joinHandleEditable = false;
+              joinError = "";
+            }
+            joinPending = false;
+          }
           if (message.state.status === "ready") {
+            joinPending = false;
+            joinError = "";
             activeTab = message.state.data.activeTab;
             items = [...message.state.data.items];
             nextCursor = message.state.data.nextCursor;
@@ -158,6 +211,7 @@
             }
           }
           return;
+          }
         case "communityPageLoading":
           pageLoading = true;
           pageLoadFailed = false;
@@ -170,10 +224,21 @@
           pageLoadFailed = false;
           return;
         }
+        case "communityFeedReplaced":
+          items = [...message.page.items];
+          nextCursor = message.page.nextCursor;
+          pageLoading = false;
+          pageLoadFailed = false;
+          return;
         case "communityPageFailed":
           pageLoading = false;
           pageLoadFailed = true;
           showToast(message.message, "error");
+          return;
+        case "communityJoinFailed":
+          joinPending = false;
+          joinError = message.message;
+          if (message.handleTaken) joinHandleEditable = true;
           return;
         case "communityProfileLoading":
           profileView = { status: "loading", handle: message.handle };
@@ -205,6 +270,84 @@
             handle: message.handle,
             message: message.message,
           };
+          return;
+        case "communityProfileUpdateSettled":
+          profileUpdatePending = false;
+          if (!message.profile) {
+            profileUpdateError = message.message ?? "Your profile could not be updated.";
+            return;
+          }
+          profileEditing = false;
+          profileUpdateError = "";
+          if (profileView.status === "ready") {
+            profileView = { status: "ready", profile: message.profile };
+          }
+          if (viewState.status === "ready") {
+            viewState = {
+              ...viewState,
+              data: {
+                ...viewState.data,
+                identity: {
+                  ...viewState.data.identity,
+                  handle: message.profile.handle,
+                  displayName:
+                    message.profile.displayName ?? viewState.data.identity.displayName,
+                  avatarUrl: message.profile.avatarUrl,
+                },
+              },
+            };
+          }
+          showToast("Profile updated.", "success");
+          return;
+        case "communityComposerLoaded":
+          composerLoading = false;
+          composerItems = [...message.items];
+          composerSelectedId = message.items[0]?.id ?? "";
+          composerError = "";
+          return;
+        case "communityComposerFailed":
+          composerLoading = false;
+          composerError = message.message;
+          return;
+        case "communityShareSettled":
+          composerPending = false;
+          if (!message.result) {
+            composerError = message.message ?? "Your affirmation was not shared.";
+            return;
+          }
+          composerOpen = false;
+          composerError = "";
+          showToast(
+            message.result.status === "already_shared"
+              ? "That affirmation is already shared."
+              : "Affirmation shared.",
+            "success",
+          );
+          return;
+        case "communityReportSettled":
+          reportPending = false;
+          if (!message.result) {
+            reportError = message.message ?? "That report could not be sent.";
+            return;
+          }
+          reportTarget = null;
+          reportError = "";
+          showToast(
+            message.result.status === "already_reported"
+              ? "You already reported this post."
+              : "Report sent.",
+            "success",
+          );
+          return;
+        case "communityBlockSettled":
+          blockPending = false;
+          if (!message.result) {
+            blockError = message.message ?? "That member could not be blocked.";
+            return;
+          }
+          blockTarget = null;
+          blockError = "";
+          showToast(message.result.blocked ? "Member blocked." : "Member unblocked.", "success");
           return;
         case "communityChatLoading":
           activeChatChannel = message.channelSlug;
@@ -368,7 +511,7 @@
     window.addEventListener("message", handleMessage);
     window.addEventListener("online", reportNetwork);
     window.addEventListener("offline", reportNetwork);
-    window.addEventListener("focus", queueVisibleChatReadAcknowledgement);
+    window.addEventListener("focus", handleWindowFocus);
     document.addEventListener("visibilitychange", queueVisibleChatReadAcknowledgement);
     document.addEventListener("pointerdown", closeMenusOnOutsidePointerDown);
     document.addEventListener("mousedown", preventChatComposerBlur);
@@ -380,7 +523,7 @@
       window.removeEventListener("message", handleMessage);
       window.removeEventListener("online", reportNetwork);
       window.removeEventListener("offline", reportNetwork);
-      window.removeEventListener("focus", queueVisibleChatReadAcknowledgement);
+      window.removeEventListener("focus", handleWindowFocus);
       document.removeEventListener("visibilitychange", queueVisibleChatReadAcknowledgement);
       document.removeEventListener("pointerdown", closeMenusOnOutsidePointerDown);
       document.removeEventListener("mousedown", preventChatComposerBlur);
@@ -465,6 +608,155 @@
     toastTimer = undefined;
   }
 
+  function submitCommunityJoin(event: SubmitEvent): void {
+    event.preventDefault();
+    const handle = joinHandle.trim().toLowerCase();
+    if (joinPending || !online) {
+      if (!online) joinError = "Connect to the internet to join the Community.";
+      return;
+    }
+    if (!/^[a-z0-9](?:[a-z0-9_]{1,30}[a-z0-9])$/u.test(handle)) {
+      joinHandleEditable = true;
+      joinError = "Use 3–32 lowercase letters, numbers, or underscores.";
+      return;
+    }
+    joinPending = true;
+    joinError = "";
+    hostApi.postMessage({ type: "joinCommunity", handle });
+  }
+
+  function refreshCommunityMembership(): void {
+    if (joinPending || !online) return;
+    joinError = "";
+    hostApi.postMessage({ type: "refreshCommunityMembership" });
+  }
+
+  function beginProfileEdit(): void {
+    if (profileView.status !== "ready" || !profileView.profile.isOwner) return;
+    profileDraft = {
+      handle: profileView.profile.handle,
+      displayName: profileView.profile.displayName ?? "",
+      bio: profileView.profile.bio ?? "",
+      avatarUrl: profileView.profile.avatarUrl ?? "",
+    };
+    profileUpdateError = "";
+    profileEditing = true;
+  }
+
+  function cancelProfileEdit(): void {
+    if (profileUpdatePending) return;
+    profileEditing = false;
+    profileUpdateError = "";
+  }
+
+  function submitProfileUpdate(event: SubmitEvent): void {
+    event.preventDefault();
+    if (profileUpdatePending || !online) {
+      if (!online) profileUpdateError = "Connect to update your profile.";
+      return;
+    }
+    const handle = profileDraft.handle.trim().toLowerCase();
+    if (!/^[a-z0-9](?:[a-z0-9_]{1,30}[a-z0-9])$/u.test(handle)) {
+      profileUpdateError = "Use 3–32 lowercase letters, numbers, or underscores.";
+      return;
+    }
+    const avatarUrl = profileDraft.avatarUrl?.trim() || null;
+    if (avatarUrl) {
+      try {
+        if (new URL(avatarUrl).protocol !== "https:") throw new Error("https required");
+      } catch {
+        profileUpdateError = "Use a valid HTTPS avatar URL.";
+        return;
+      }
+    }
+    profileUpdatePending = true;
+    profileUpdateError = "";
+    hostApi.postMessage({
+      type: "updateCommunityProfile",
+      input: {
+        handle,
+        displayName: profileDraft.displayName?.trim() || null,
+        bio: profileDraft.bio?.trim() || null,
+        avatarUrl,
+      },
+    });
+  }
+
+  function openComposer(): void {
+    if (!online) {
+      showToast("Connect to share an affirmation.", "warning");
+      return;
+    }
+    composerOpen = true;
+    composerLoading = true;
+    composerItems = [];
+    composerSelectedId = "";
+    composerError = "";
+    hostApi.postMessage({ type: "loadCommunityComposer" });
+  }
+
+  function closeComposer(): void {
+    if (composerPending) return;
+    composerOpen = false;
+    composerError = "";
+  }
+
+  function submitCommunityShare(event: SubmitEvent): void {
+    event.preventDefault();
+    if (composerPending || !composerSelectedId || !online) return;
+    composerPending = true;
+    composerError = "";
+    hostApi.postMessage({
+      type: "shareCommunityAffirmation",
+      sourceAffirmationId: composerSelectedId,
+      clientNonce: crypto.randomUUID(),
+    });
+  }
+
+  function openReport(messageId: string, handle: string, menu?: HTMLDetailsElement | null): void {
+    menu?.removeAttribute("open");
+    chatContextMenu = null;
+    reportTarget = { id: messageId, handle };
+    reportReason = "spam";
+    reportDetails = "";
+    reportError = "";
+  }
+
+  function submitReport(event: SubmitEvent): void {
+    event.preventDefault();
+    if (!reportTarget || reportPending || !online) return;
+    reportPending = true;
+    reportError = "";
+    hostApi.postMessage({
+      type: "reportCommunityMessage",
+      messageId: reportTarget.id,
+      reason: reportReason,
+      ...(reportDetails.trim() ? { details: reportDetails.trim() } : {}),
+    });
+  }
+
+  function openBlock(
+    userId: string,
+    handle: string,
+    menu?: HTMLDetailsElement | null,
+  ): void {
+    menu?.removeAttribute("open");
+    chatContextMenu = null;
+    blockTarget = { userId, handle };
+    blockError = "";
+  }
+
+  function confirmBlock(): void {
+    if (!blockTarget || blockPending || !online) return;
+    blockPending = true;
+    blockError = "";
+    hostApi.postMessage({
+      type: "setCommunityBlock",
+      userId: blockTarget.userId,
+      blocked: true,
+    });
+  }
+
   function observeFeedEnd(node: HTMLElement): { destroy(): void } {
     const observer = new IntersectionObserver(
       (entries) => {
@@ -512,6 +804,8 @@
   }
 
   function closeProfile(): void {
+    profileEditing = false;
+    profileUpdateError = "";
     profileView = { status: "closed" };
     profileItems = [];
     profileNextCursor = null;
@@ -1223,6 +1517,24 @@
       return;
     }
     if (event.key !== "Escape") return;
+    if (blockTarget && !blockPending) {
+      blockTarget = null;
+      blockError = "";
+      return;
+    }
+    if (reportTarget && !reportPending) {
+      reportTarget = null;
+      reportError = "";
+      return;
+    }
+    if (composerOpen && !composerPending) {
+      closeComposer();
+      return;
+    }
+    if (profileEditing && !profileUpdatePending) {
+      cancelProfileEdit();
+      return;
+    }
     if (chatBulkDeleteConfirm) {
       chatBulkDeleteConfirm = false;
       return;
@@ -1520,7 +1832,50 @@
           <p class="member-handle">@{profileView.profile.handle}</p>
           {#if profileView.profile.bio}<p class="member-bio">{profileView.profile.bio}</p>{/if}
         </div>
+        {#if profileView.profile.isOwner && !profileEditing}
+          <button class="profile-edit-trigger" type="button" onclick={beginProfileEdit}>Edit profile</button>
+        {/if}
       </div>
+
+      {#if profileEditing}
+        <form class="profile-editor" onsubmit={submitProfileUpdate}>
+          <label>
+            <span>Handle</span>
+            <input
+              bind:value={profileDraft.handle}
+              maxlength="32"
+              autocomplete="off"
+              spellcheck="false"
+              disabled={profileUpdatePending}
+            />
+          </label>
+          <label>
+            <span>Display name</span>
+            <input bind:value={profileDraft.displayName} maxlength="80" disabled={profileUpdatePending} />
+          </label>
+          <label class="profile-editor-wide">
+            <span>Bio</span>
+            <textarea bind:value={profileDraft.bio} maxlength="320" rows="3" disabled={profileUpdatePending}></textarea>
+          </label>
+          <label class="profile-editor-wide">
+            <span>Avatar URL</span>
+            <input
+              bind:value={profileDraft.avatarUrl}
+              type="url"
+              inputmode="url"
+              placeholder="https://…"
+              disabled={profileUpdatePending}
+            />
+          </label>
+          {#if profileUpdateError}<p class="native-form-error" role="alert">{profileUpdateError}</p>{/if}
+          <div class="native-form-actions profile-editor-wide">
+            <button type="button" disabled={profileUpdatePending} onclick={cancelProfileEdit}>Cancel</button>
+            <button type="submit" disabled={profileUpdatePending || !online}
+              >{profileUpdatePending ? "Saving…" : "Save profile"}</button
+            >
+          </div>
+        </form>
+      {/if}
 
       <nav class="member-tabs" aria-label="Profile collections">
         <button class="active" type="button">Shared</button>
@@ -1546,6 +1901,18 @@
                   >
                     <Icon name="plus" size="small" /> Add to my library
                   </button>
+                  {#if item.permissions.canReport}
+                    <button
+                      type="button"
+                      onclick={(event) => openReport(item.id, item.author.handle, event.currentTarget.closest("details"))}
+                    >Report</button>
+                  {/if}
+                  {#if item.permissions.canBlock}
+                    <button
+                      type="button"
+                      onclick={(event) => openBlock(item.author.userId, item.author.handle, event.currentTarget.closest("details"))}
+                    >Block @{item.author.handle}</button>
+                  {/if}
                 </div>
               </details>
               <blockquote>{displayText(item.affirmation.text)}</blockquote>
@@ -1846,6 +2213,20 @@
                   onclick={() => (chatDeleteConfirmId = contextMessage.id)}
                 ><TrashSimpleIcon size={17} aria-hidden="true" /> Delete</button>
               {/if}
+              {#if contextMessage.permissions.canReport}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => openReport(contextMessage.id, contextMessage.author.handle)}
+                >Report</button>
+              {/if}
+              {#if contextMessage.permissions.canBlock}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onclick={() => openBlock(contextMessage.author.userId, contextMessage.author.handle)}
+                >Block @{contextMessage.author.handle}</button>
+              {/if}
             {/if}
           </div>
         {/if}
@@ -1931,13 +2312,41 @@
       <button type="button" onclick={() => hostApi.postMessage({ type: "focusGlow" })}>Open Glow</button>
     </section>
   {:else if viewState.status === "not_member"}
-    <section class="center-state">
-      <h1>Set up your community profile first.</h1>
-      <p>Your handle and profile are created on the web.</p>
-      <button
-        type="button"
-        onclick={() => hostApi.postMessage({ type: "openCommunityOnWeb", destination: "profile" })}
-      >Set up profile <Icon name="external" size="small" /></button>
+    <section class="center-state community-onboarding" aria-labelledby="community-join-title">
+      <span class="onboarding-mark"><GlowMark size="prominent" /></span>
+      <p class="native-eyebrow">GLOW COMMUNITY</p>
+      <h1 id="community-join-title">A thoughtful place to grow together.</h1>
+      <p>Join the conversation with a Community profile connected to your Glow account.</p>
+      <form class="join-form" onsubmit={submitCommunityJoin}>
+        {#if joinHandleEditable}
+          <label>
+            <span>Choose your handle</span>
+            <input
+              bind:value={joinHandle}
+              maxlength="32"
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              disabled={joinPending}
+            />
+          </label>
+        {:else}
+          <p class="join-identity">
+            <strong>{viewState.identity.displayName}</strong>
+            <span>@{joinHandle}</span>
+          </p>
+        {/if}
+        {#if joinError}<p class="native-form-error" role="alert">{joinError}</p>{/if}
+        <button class="primary-native-action" type="submit" disabled={joinPending || !online}
+          >{joinPending ? "Joining…" : "Join the community"}</button
+        >
+        <button
+          class="quiet-native-action"
+          type="button"
+          disabled={joinPending || !online}
+          onclick={refreshCommunityMembership}>Already joined? Refresh</button
+        >
+      </form>
     </section>
   {:else if viewState.status === "error"}
     <section class="center-state">
@@ -1976,6 +2385,18 @@
                   >
                     <Icon name="plus" size="small" /> Add to my library
                   </button>
+                  {#if item.permissions.canReport}
+                    <button
+                      type="button"
+                      onclick={(event) => openReport(item.id, item.author.handle, event.currentTarget.closest("details"))}
+                    >Report</button>
+                  {/if}
+                  {#if item.permissions.canBlock}
+                    <button
+                      type="button"
+                      onclick={(event) => openBlock(item.author.userId, item.author.handle, event.currentTarget.closest("details"))}
+                    >Block @{item.author.handle}</button>
+                  {/if}
                 </div>
               </details>
 
@@ -2046,9 +2467,111 @@
     <button
       class="compose"
       type="button"
-      aria-label="Share an affirmation on the web"
-      onclick={() => hostApi.postMessage({ type: "openCommunityOnWeb", destination: "compose" })}
+      aria-label="Share an affirmation"
+      onclick={openComposer}
     ><FeatherIcon size={22} aria-hidden="true" /></button>
+  {/if}
+
+  {#if composerOpen}
+    <div class="native-dialog-backdrop" role="presentation" onclick={(event) => {
+      if (event.target === event.currentTarget) closeComposer();
+    }}>
+      <div class="native-dialog composer-dialog" role="dialog" aria-modal="true" aria-labelledby="composer-title">
+        <header>
+          <div>
+            <p class="native-eyebrow">SHARED AFFIRMATION</p>
+            <h2 id="composer-title">Choose one thought to share.</h2>
+          </div>
+          <button type="button" aria-label="Close composer" disabled={composerPending} onclick={closeComposer}
+            ><Icon name="close" size="small" /></button
+          >
+        </header>
+        {#if composerLoading}
+          <div class="native-dialog-loading"><LoadingSpinner size="prominent" /><p>Opening your library…</p></div>
+        {:else}
+          <form onsubmit={submitCommunityShare}>
+            {#if composerItems.length === 0}
+              <p class="native-empty">Your library does not have an affirmation available to share yet.</p>
+            {:else}
+              <fieldset class="composer-choices">
+                <legend class="sr-only">Choose an affirmation</legend>
+                {#each composerItems as affirmation (affirmation.id)}
+                  <label class:active={composerSelectedId === affirmation.id}>
+                    <input type="radio" bind:group={composerSelectedId} value={affirmation.id} />
+                    <span>
+                      <strong>{displayText(affirmation.text)}</strong>
+                      <small>{affirmation.kind === "custom" ? "Custom" : "Included"}</small>
+                    </span>
+                  </label>
+                {/each}
+              </fieldset>
+            {/if}
+            {#if composerError}<p class="native-form-error" role="alert">{composerError}</p>{/if}
+            <div class="native-form-actions">
+              <button type="button" disabled={composerPending} onclick={closeComposer}>Cancel</button>
+              <button
+                type="submit"
+                disabled={composerPending || !composerSelectedId || !online}
+                >{composerPending ? "Sharing…" : "Share"}</button
+              >
+            </div>
+          </form>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
+  {#if reportTarget}
+    <div class="native-dialog-backdrop" role="presentation">
+      <div class="native-dialog moderation-dialog" role="dialog" aria-modal="true" aria-labelledby="report-title">
+        <header>
+          <div><p class="native-eyebrow">REPORT</p><h2 id="report-title">Tell us what happened.</h2></div>
+          <button type="button" aria-label="Close report" disabled={reportPending} onclick={() => (reportTarget = null)}
+            ><Icon name="close" size="small" /></button
+          >
+        </header>
+        <form onsubmit={submitReport}>
+          <label>
+            <span>Reason</span>
+            <select bind:value={reportReason} disabled={reportPending}>
+              <option value="spam">Spam</option>
+              <option value="harassment">Harassment</option>
+              <option value="hate">Hate</option>
+              <option value="self_harm">Self-harm concern</option>
+              <option value="misinformation">Misinformation</option>
+              <option value="other">Something else</option>
+            </select>
+          </label>
+          <label>
+            <span>Details <small>Optional</small></span>
+            <textarea bind:value={reportDetails} maxlength="2000" rows="4" disabled={reportPending}></textarea>
+          </label>
+          {#if reportError}<p class="native-form-error" role="alert">{reportError}</p>{/if}
+          <div class="native-form-actions">
+            <button type="button" disabled={reportPending} onclick={() => (reportTarget = null)}>Cancel</button>
+            <button type="submit" disabled={reportPending || !online}
+              >{reportPending ? "Sending…" : "Send report"}</button
+            >
+          </div>
+        </form>
+      </div>
+    </div>
+  {/if}
+
+  {#if blockTarget}
+    <div class="native-dialog-backdrop" role="presentation">
+      <div class="native-dialog moderation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="block-title">
+        <header><div><p class="native-eyebrow">BLOCK MEMBER</p><h2 id="block-title">Block @{blockTarget.handle}?</h2></div></header>
+        <p>You will no longer see one another in the Community.</p>
+        {#if blockError}<p class="native-form-error" role="alert">{blockError}</p>{/if}
+        <div class="native-form-actions">
+          <button type="button" disabled={blockPending} onclick={() => (blockTarget = null)}>Cancel</button>
+          <button class="destructive" type="button" disabled={blockPending || !online} onclick={confirmBlock}
+            >{blockPending ? "Blocking…" : "Block member"}</button
+          >
+        </div>
+      </div>
+    </div>
   {/if}
 
   {#if toast}
@@ -2124,7 +2647,7 @@
   .member-identity {
     display: grid;
     max-width: 760px;
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: 24px;
     margin-bottom: 38px;
@@ -3180,6 +3703,216 @@
   .center-state p { margin: 0 0 12px; color: var(--sol-muted); font-size: 14px; }
   .feed-empty { min-height: 50vh; }
 
+  .community-onboarding {
+    width: min(100%, 560px);
+    min-height: calc(100% - 48px);
+    margin: 0 auto;
+  }
+  .onboarding-mark {
+    display: grid;
+    width: 84px;
+    height: 84px;
+    place-items: center;
+    margin-bottom: 8px;
+    border-radius: 28px;
+    background: color-mix(in srgb, var(--sol-accent) 8%, transparent);
+    box-shadow: 0 18px 48px color-mix(in srgb, var(--sol-accent) 15%, transparent);
+    transform: scale(1.7);
+  }
+  .native-eyebrow {
+    margin: 10px 0 0 !important;
+    color: var(--sol-accent) !important;
+    font-size: 10px !important;
+    font-weight: 750;
+    letter-spacing: 0.13em;
+  }
+  .community-onboarding > p:not(.native-eyebrow) { max-width: 440px; line-height: 1.55; }
+  .join-form {
+    display: grid;
+    width: min(100%, 360px);
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .join-form label,
+  .profile-editor label,
+  .moderation-dialog label {
+    display: grid;
+    gap: 7px;
+    color: var(--sol-muted);
+    font-size: 11px;
+    font-weight: 650;
+    text-align: left;
+  }
+  .join-form input,
+  .profile-editor input,
+  .profile-editor textarea,
+  .moderation-dialog select,
+  .moderation-dialog textarea {
+    width: 100%;
+    min-height: 42px;
+    padding: 9px 12px;
+    border: 1px solid var(--sol-border);
+    border-radius: 11px;
+    outline: none;
+    background: var(--sol-control-bg);
+    color: var(--sol-text);
+    font: inherit;
+  }
+  .join-form input:focus,
+  .profile-editor input:focus,
+  .profile-editor textarea:focus,
+  .moderation-dialog select:focus,
+  .moderation-dialog textarea:focus { border-color: var(--sol-accent); }
+  .join-identity {
+    display: grid;
+    gap: 3px;
+    margin: 0 0 4px !important;
+    padding: 13px 16px;
+    border: 1px solid var(--sol-border);
+    border-radius: 13px;
+    background: var(--sol-panel);
+  }
+  .join-identity strong { color: var(--sol-text); font-size: 14px; }
+  .join-identity span { color: var(--sol-muted); font-size: 12px; }
+  .center-state .primary-native-action,
+  .primary-native-action {
+    border-color: var(--sol-accent);
+    background: var(--sol-accent);
+    color: var(--sol-button-fg);
+  }
+  .center-state .quiet-native-action {
+    min-height: 30px;
+    border: 0;
+    background: transparent;
+    color: var(--sol-muted);
+    font-size: 11px;
+  }
+  .native-form-error {
+    margin: 0 !important;
+    color: var(--sol-danger, #d66b62) !important;
+    font-size: 12px !important;
+    line-height: 1.4;
+  }
+  button:disabled,
+  input:disabled,
+  textarea:disabled,
+  select:disabled { cursor: default; opacity: 0.56; }
+
+  .profile-edit-trigger {
+    align-self: start;
+    min-height: 34px;
+    padding: 0 14px;
+    border: 1px solid var(--sol-border);
+    border-radius: 999px;
+    background: var(--sol-control-bg);
+    color: var(--sol-text);
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .profile-editor {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    margin: -8px 0 30px;
+    padding: 20px;
+    border: 1px solid var(--sol-border);
+    border-radius: 16px;
+    background: var(--sol-panel);
+  }
+  .profile-editor textarea,
+  .moderation-dialog textarea { resize: vertical; }
+  .profile-editor-wide,
+  .profile-editor > .native-form-error { grid-column: 1 / -1; }
+
+  .native-dialog-backdrop {
+    position: fixed;
+    z-index: 100;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 22px;
+    background: rgb(0 0 0 / 58%);
+    backdrop-filter: blur(5px);
+  }
+  .native-dialog {
+    width: min(100%, 760px);
+    max-height: min(760px, calc(100vh - 44px));
+    overflow: auto;
+    padding: 22px;
+    border: 1px solid var(--sol-border);
+    border-radius: 18px;
+    background: var(--sol-panel);
+    color: var(--sol-text);
+    box-shadow: 0 30px 80px rgb(0 0 0 / 34%);
+  }
+  .native-dialog > header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 20px;
+  }
+  .native-dialog h2 { margin: 4px 0 0; font-size: clamp(20px, 3vw, 28px); letter-spacing: -0.025em; }
+  .native-dialog > header > button {
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    border: 1px solid var(--sol-border);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--sol-text);
+    cursor: pointer;
+  }
+  .native-dialog-loading { display: grid; min-height: 220px; place-items: center; align-content: center; gap: 12px; color: var(--sol-muted); }
+  .native-empty { padding: 30px 0; color: var(--sol-muted); text-align: center; }
+  .composer-choices {
+    display: grid;
+    max-height: min(430px, 55vh);
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    overflow: auto;
+    border: 0;
+  }
+  .composer-choices label {
+    display: flex;
+    align-items: flex-start;
+    gap: 11px;
+    padding: 13px 14px;
+    border: 1px solid var(--sol-border);
+    border-radius: 12px;
+    background: var(--sol-control-bg);
+    cursor: pointer;
+  }
+  .composer-choices label.active { border-color: var(--sol-accent); background: color-mix(in srgb, var(--sol-accent) 9%, var(--sol-control-bg)); }
+  .composer-choices input { margin-top: 3px; accent-color: var(--sol-accent); }
+  .composer-choices span { display: grid; gap: 5px; }
+  .composer-choices strong { color: var(--sol-text); font-family: var(--sol-font-display); font-size: 17px; font-weight: 520; }
+  .composer-choices small { color: var(--sol-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .native-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 9px;
+    margin-top: 18px;
+  }
+  .native-form-actions button {
+    min-height: 38px;
+    padding: 0 16px;
+    border: 1px solid var(--sol-border);
+    border-radius: 999px;
+    background: var(--sol-control-bg);
+    color: var(--sol-text);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 650;
+  }
+  .native-form-actions button[type="submit"] { border-color: var(--sol-accent); background: var(--sol-accent); color: var(--sol-button-fg); }
+  .native-form-actions .destructive { border-color: color-mix(in srgb, #d66b62 55%, var(--sol-border)); color: #e27d74; }
+  .moderation-dialog { width: min(100%, 480px); }
+  .moderation-dialog form { display: grid; gap: 14px; }
+  .moderation-dialog > p { color: var(--sol-muted); line-height: 1.5; }
+
   .compose {
     position: fixed;
     z-index: 18;
@@ -3242,6 +3975,12 @@
     .member-avatar,
     .member-avatar img { width: 68px; height: 68px; border-radius: 19px; }
     .member-copy h1 { font-size: 26px; }
+    .profile-edit-trigger { grid-column: 1 / -1; justify-self: start; }
+    .profile-editor { grid-template-columns: 1fr; padding: 16px; }
+    .profile-editor-wide,
+    .profile-editor > .native-form-error { grid-column: 1; }
+    .native-dialog-backdrop { padding: 12px; }
+    .native-dialog { padding: 18px; border-radius: 15px; }
   }
 
   @media (max-width: 480px) {

@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
 import * as vscode from "vscode";
 import {
+  CommunityApiError,
   isCommunityChatChannelSlug,
+  type CommunityBlockResult,
   type CommunityAffirmationFeedItem,
   type CommunityChatChannel,
   type CommunityChatChannelSlug,
@@ -14,9 +16,16 @@ import {
   type CommunityDeleteResult,
   type CommunityFeedPage,
   type CommunityLibraryImportResult,
+  type CommunityJoinInput,
+  type CommunityJoinResult,
   type CommunityMemberProfile,
   type CommunityMembership,
+  type CommunityProfileUpdateInput,
+  type CommunityReportReason,
+  type CommunityReportResult,
   type CommunityReactionResult,
+  type CommunityShareableAffirmation,
+  type CommunityShareResult,
   type CommunityUnreadChatReplies,
 } from "./community.js";
 import { errorMessage } from "./errorMessage.js";
@@ -51,12 +60,27 @@ export type CommunityPanelBridge = {
     listener: (user: CommunityPanelUser | null) => void,
   ): vscode.Disposable;
   membership(): Promise<CommunityMembership>;
+  join(input: CommunityJoinInput): Promise<CommunityJoinResult>;
   affirmations(cursor?: string | null): Promise<CommunityFeedPage>;
   profile(handle: string): Promise<CommunityMemberProfile>;
+  updateProfile(
+    input: CommunityProfileUpdateInput,
+  ): Promise<CommunityMemberProfile>;
   profileAffirmations(
     handle: string,
     cursor?: string | null,
   ): Promise<CommunityFeedPage>;
+  shareableAffirmations(): Promise<CommunityShareableAffirmation[]>;
+  shareAffirmation(
+    sourceAffirmationId: string,
+    clientNonce: string,
+  ): Promise<CommunityShareResult>;
+  reportMessage(
+    messageId: string,
+    reason: CommunityReportReason,
+    details?: string,
+  ): Promise<CommunityReportResult>;
+  setBlock(userId: string, blocked: boolean): Promise<CommunityBlockResult>;
   chatChannels(): Promise<CommunityChatChannel[]>;
   chatMessages(
     channel: CommunityChatChannelSlug,
@@ -117,17 +141,37 @@ type CommunitySnapshot = {
 type CommunityViewState =
   | { status: "loading" }
   | { status: "signed_out" }
-  | { status: "not_member" }
+  | {
+      status: "not_member";
+      identity: CommunityPanelUser;
+      suggestedHandle: string;
+    }
   | { status: "ready"; data: CommunitySnapshot }
   | { status: "error"; message: string };
 
 type CommunityToExtensionMessage =
   | { type: "communityReady" }
   | { type: "communityNetworkStatus"; online: boolean }
+  | { type: "joinCommunity"; handle: string }
+  | { type: "refreshCommunityMembership" }
   | { type: "loadMoreCommunityAffirmations" }
   | { type: "openCommunityProfile"; handle: string }
   | { type: "closeCommunityProfile" }
   | { type: "loadMoreCommunityProfileAffirmations" }
+  | { type: "updateCommunityProfile"; input: CommunityProfileUpdateInput }
+  | { type: "loadCommunityComposer" }
+  | {
+      type: "shareCommunityAffirmation";
+      sourceAffirmationId: string;
+      clientNonce: string;
+    }
+  | {
+      type: "reportCommunityMessage";
+      messageId: string;
+      reason: CommunityReportReason;
+      details?: string;
+    }
+  | { type: "setCommunityBlock"; userId: string; blocked: boolean }
   | { type: "setCommunitySurfaceTab"; activeTab: CommunitySurfaceTab }
   | {
       type: "selectCommunityChatChannel";
@@ -169,14 +213,19 @@ type CommunityToExtensionMessage =
   | { type: "playCommunityAffirmation"; messageId: string; requestId: string }
   | { type: "setCommunityReaction"; messageId: string; active: boolean }
   | { type: "addCommunityAffirmationToLibrary"; messageId: string }
-  | { type: "openCommunityOnWeb"; destination: "chats" | "profile" | "compose" }
   | { type: "focusGlow" };
 
 type ExtensionToCommunityMessage =
   | { type: "communityState"; state: CommunityViewState }
   | { type: "communityPageLoading" }
   | { type: "communityPageLoaded"; page: CommunityFeedPage }
+  | { type: "communityFeedReplaced"; page: CommunityFeedPage }
   | { type: "communityPageFailed"; message: string }
+  | {
+      type: "communityJoinFailed";
+      message: string;
+      handleTaken: boolean;
+    }
   | { type: "communityProfileLoading"; handle: string }
   | {
       type: "communityProfileLoaded";
@@ -185,6 +234,33 @@ type ExtensionToCommunityMessage =
       mode: "replace" | "append";
     }
   | { type: "communityProfileFailed"; handle: string; message: string }
+  | {
+      type: "communityProfileUpdateSettled";
+      profile: CommunityMemberProfile | null;
+      message: string | null;
+    }
+  | {
+      type: "communityComposerLoaded";
+      items: CommunityShareableAffirmation[];
+    }
+  | { type: "communityComposerFailed"; message: string }
+  | {
+      type: "communityShareSettled";
+      result: CommunityShareResult | null;
+      message: string | null;
+    }
+  | {
+      type: "communityReportSettled";
+      messageId: string;
+      result: CommunityReportResult | null;
+      message: string | null;
+    }
+  | {
+      type: "communityBlockSettled";
+      userId: string;
+      result: CommunityBlockResult | null;
+      message: string | null;
+    }
   | { type: "communityChatLoading"; channelSlug: CommunityChatChannelSlug }
   | {
       type: "communityChatLoaded";
@@ -263,7 +339,6 @@ type ExtensionToCommunityMessage =
       message: string | null;
     };
 
-const COMMUNITY_URL = "https://justglow.dev/community";
 const COMMUNITY_SURFACE_PREFERENCE_KEY = "glow.community.surface.v1";
 
 export class GlowCommunityPanel implements vscode.Disposable {
@@ -273,6 +348,12 @@ export class GlowCommunityPanel implements vscode.Disposable {
   private loadSequence = 0;
   private pageLoad: Promise<void> | null = null;
   private profileLoad: Promise<void> | null = null;
+  private joinLoad: Promise<void> | null = null;
+  private profileUpdate: Promise<void> | null = null;
+  private composerLoad: Promise<void> | null = null;
+  private shareLoad: Promise<void> | null = null;
+  private awaitingMembership = false;
+  private lastMembershipFocusRefresh = 0;
   private profileSequence = 0;
   private activeProfile: {
     profile: CommunityMemberProfile;
@@ -298,6 +379,7 @@ export class GlowCommunityPanel implements vscode.Disposable {
   >();
   private lastUserKey: string | null = null;
   private readonly userSubscription: vscode.Disposable;
+  private readonly focusSubscription: vscode.Disposable;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -312,12 +394,20 @@ export class GlowCommunityPanel implements vscode.Disposable {
       this.chatRefreshes.clear();
       if (this.panel) void this.loadCommunity(false);
     });
+    this.focusSubscription = vscode.window.onDidChangeWindowState((state) => {
+      if (!state.focused || !this.panel || !this.awaitingMembership) return;
+      const now = Date.now();
+      if (now - this.lastMembershipFocusRefresh < 1_000) return;
+      this.lastMembershipFocusRefresh = now;
+      void this.loadCommunity(false);
+    });
   }
 
   dispose(): void {
     this.loadSequence += 1;
     this.disposeChatRealtime();
     this.userSubscription.dispose();
+    this.focusSubscription.dispose();
     this.panel?.dispose();
     this.panel = undefined;
     this.snapshot = null;
@@ -370,6 +460,7 @@ export class GlowCommunityPanel implements vscode.Disposable {
       this.disposeChatRealtime();
       this.panel = undefined;
       this.snapshot = null;
+      this.awaitingMembership = false;
       this.profileSequence += 1;
       this.activeProfile = null;
     });
@@ -401,6 +492,12 @@ export class GlowCommunityPanel implements vscode.Disposable {
       case "communityNetworkStatus":
         this.bridge.setNetworkAvailable(message.online);
         return;
+      case "joinCommunity":
+        await this.joinCommunity(message.handle);
+        return;
+      case "refreshCommunityMembership":
+        await this.loadCommunity(false);
+        return;
       case "loadMoreCommunityAffirmations":
         await this.loadMore();
         return;
@@ -413,6 +510,28 @@ export class GlowCommunityPanel implements vscode.Disposable {
         return;
       case "loadMoreCommunityProfileAffirmations":
         await this.loadMoreProfileAffirmations();
+        return;
+      case "updateCommunityProfile":
+        await this.updateProfile(message.input);
+        return;
+      case "loadCommunityComposer":
+        await this.loadComposer();
+        return;
+      case "shareCommunityAffirmation":
+        await this.shareAffirmation(
+          message.sourceAffirmationId,
+          message.clientNonce,
+        );
+        return;
+      case "reportCommunityMessage":
+        await this.reportMessage(
+          message.messageId,
+          message.reason,
+          message.details,
+        );
+        return;
+      case "setCommunityBlock":
+        await this.setBlock(message.userId, message.blocked);
         return;
       case "setCommunitySurfaceTab":
         await this.setSurfaceTab(message.activeTab);
@@ -468,9 +587,6 @@ export class GlowCommunityPanel implements vscode.Disposable {
       case "addCommunityAffirmationToLibrary":
         await this.addToLibrary(message.messageId);
         return;
-      case "openCommunityOnWeb":
-        await this.openOnWeb(message.destination);
-        return;
       case "focusGlow":
         await vscode.commands.executeCommand("workbench.view.extension.glow");
         return;
@@ -490,6 +606,7 @@ export class GlowCommunityPanel implements vscode.Disposable {
     if (!user) {
       this.disposeChatRealtime();
       this.snapshot = null;
+      this.awaitingMembership = false;
       await this.post({
         type: "communityState",
         state: { status: "signed_out" },
@@ -512,12 +629,19 @@ export class GlowCommunityPanel implements vscode.Disposable {
       if (this.panel !== panel || sequence !== this.loadSequence) return;
       if (!membership.joined || !membership.profile) {
         this.snapshot = null;
+        this.awaitingMembership = true;
         await this.post({
           type: "communityState",
-          state: { status: "not_member" },
+          state: {
+            status: "not_member",
+            identity: user,
+            suggestedHandle: suggestedCommunityHandle(user, membership),
+          },
         });
         return;
       }
+
+      this.awaitingMembership = false;
 
       const page = await this.bridge.affirmations();
       if (this.panel !== panel || sequence !== this.loadSequence) return;
@@ -1515,6 +1639,254 @@ export class GlowCommunityPanel implements vscode.Disposable {
     }
   }
 
+  private async joinCommunity(handle: string): Promise<void> {
+    if (this.joinLoad) return;
+    const user = this.bridge.getUser();
+    const normalizedHandle = handle.trim().toLowerCase();
+    if (!user) {
+      await this.post({
+        type: "communityJoinFailed",
+        message: "Sign in before joining the Community.",
+        handleTaken: false,
+      });
+      return;
+    }
+    if (!this.bridge.isOnline()) {
+      await this.post({
+        type: "communityJoinFailed",
+        message: "Connect to the internet to join the Community.",
+        handleTaken: false,
+      });
+      return;
+    }
+    if (!isCommunityHandle(normalizedHandle)) {
+      await this.post({
+        type: "communityJoinFailed",
+        message: "Use 3–32 lowercase letters, numbers, or underscores.",
+        handleTaken: false,
+      });
+      return;
+    }
+
+    const pending = (async () => {
+      try {
+        await this.bridge.join({
+          handle: normalizedHandle,
+          displayName: user.displayName.trim() || undefined,
+          avatarUrl: user.avatarUrl ?? undefined,
+        });
+        await this.loadCommunity(false);
+      } catch (error) {
+        await this.post({
+          type: "communityJoinFailed",
+          message: communityErrorMessage(error),
+          handleTaken:
+            error instanceof CommunityApiError && error.code === "handle_taken",
+        });
+      }
+    })();
+    this.joinLoad = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.joinLoad === pending) this.joinLoad = null;
+    }
+  }
+
+  private async updateProfile(
+    input: CommunityProfileUpdateInput,
+  ): Promise<void> {
+    if (this.profileUpdate) return;
+    if (!this.bridge.isOnline()) {
+      await this.post({
+        type: "communityProfileUpdateSettled",
+        profile: null,
+        message: "Connect to update your profile.",
+      });
+      return;
+    }
+    const active = this.activeProfile;
+    if (!active?.profile.isOwner) return;
+
+    const pending = (async () => {
+      try {
+        const profile = await this.bridge.updateProfile(input);
+        if (!this.activeProfile?.profile.isOwner) return;
+        this.activeProfile = { ...this.activeProfile, profile };
+        this.replaceOwnProfile(profile);
+        await this.post({
+          type: "communityProfileUpdateSettled",
+          profile,
+          message: null,
+        });
+      } catch (error) {
+        await this.post({
+          type: "communityProfileUpdateSettled",
+          profile: null,
+          message: communityErrorMessage(error),
+        });
+      }
+    })();
+    this.profileUpdate = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.profileUpdate === pending) this.profileUpdate = null;
+    }
+  }
+
+  private replaceOwnProfile(profile: CommunityMemberProfile): void {
+    const snapshot = this.snapshot;
+    if (!snapshot || snapshot.identity.id !== profile.userId) return;
+    const replaceAuthor = <
+      T extends { author: CommunityAffirmationFeedItem["author"] },
+    >(
+      item: T,
+    ): T =>
+      item.author.userId === profile.userId
+        ? {
+            ...item,
+            author: {
+              ...item.author,
+              handle: profile.handle,
+              displayName: profile.displayName,
+              avatarUrl: profile.avatarUrl,
+            },
+          }
+        : item;
+    this.snapshot = {
+      ...snapshot,
+      identity: {
+        ...snapshot.identity,
+        handle: profile.handle,
+        displayName:
+          profile.displayName?.trim() || snapshot.identity.displayName,
+        avatarUrl: profile.avatarUrl,
+      },
+      items: snapshot.items.map(replaceAuthor),
+      chat: {
+        ...snapshot.chat,
+        items: snapshot.chat.items.map(replaceAuthor),
+      },
+    };
+  }
+
+  private async loadComposer(): Promise<void> {
+    if (this.composerLoad) return;
+    if (!this.bridge.isOnline()) {
+      await this.post({
+        type: "communityComposerFailed",
+        message: "Connect to choose an affirmation.",
+      });
+      return;
+    }
+    const pending = (async () => {
+      try {
+        const items = await this.bridge.shareableAffirmations();
+        await this.post({ type: "communityComposerLoaded", items });
+      } catch (error) {
+        await this.post({
+          type: "communityComposerFailed",
+          message: communityErrorMessage(error),
+        });
+      }
+    })();
+    this.composerLoad = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.composerLoad === pending) this.composerLoad = null;
+    }
+  }
+
+  private async shareAffirmation(
+    sourceAffirmationId: string,
+    clientNonce: string,
+  ): Promise<void> {
+    if (this.shareLoad) return;
+    const pending = (async () => {
+      try {
+        const result = await this.bridge.shareAffirmation(
+          sourceAffirmationId,
+          clientNonce,
+        );
+        const page = await this.bridge.affirmations();
+        if (this.snapshot) {
+          this.snapshot = {
+            ...this.snapshot,
+            items: page.items,
+            nextCursor: page.nextCursor,
+          };
+        }
+        await this.post({ type: "communityFeedReplaced", page });
+        await this.post({
+          type: "communityShareSettled",
+          result,
+          message: null,
+        });
+      } catch (error) {
+        await this.post({
+          type: "communityShareSettled",
+          result: null,
+          message: communityErrorMessage(error),
+        });
+      }
+    })();
+    this.shareLoad = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.shareLoad === pending) this.shareLoad = null;
+    }
+  }
+
+  private async reportMessage(
+    messageId: string,
+    reason: CommunityReportReason,
+    details?: string,
+  ): Promise<void> {
+    try {
+      const result = await this.bridge.reportMessage(
+        messageId,
+        reason,
+        details,
+      );
+      await this.post({
+        type: "communityReportSettled",
+        messageId,
+        result,
+        message: null,
+      });
+    } catch (error) {
+      await this.post({
+        type: "communityReportSettled",
+        messageId,
+        result: null,
+        message: communityErrorMessage(error),
+      });
+    }
+  }
+
+  private async setBlock(userId: string, blocked: boolean): Promise<void> {
+    try {
+      const result = await this.bridge.setBlock(userId, blocked);
+      await this.post({
+        type: "communityBlockSettled",
+        userId,
+        result,
+        message: null,
+      });
+      await this.loadCommunity(false);
+    } catch (error) {
+      await this.post({
+        type: "communityBlockSettled",
+        userId,
+        result: null,
+        message: communityErrorMessage(error),
+      });
+    }
+  }
+
   private async openProfile(handle: string): Promise<void> {
     const normalizedHandle = handle.trim().replace(/^@/u, "").toLowerCase();
     if (!/^[a-z0-9_]{3,32}$/u.test(normalizedHandle) || !this.bridge.isOnline())
@@ -1718,21 +2090,6 @@ export class GlowCommunityPanel implements vscode.Disposable {
     }
   }
 
-  private async openOnWeb(
-    destination: "chats" | "profile" | "compose",
-  ): Promise<void> {
-    const handle = this.snapshot?.identity.handle;
-    const url =
-      destination === "chats"
-        ? `${COMMUNITY_URL}?channel=chats`
-        : destination === "profile"
-          ? handle
-            ? `${COMMUNITY_URL}/@${encodeURIComponent(handle)}`
-            : `${COMMUNITY_URL}/profile`
-          : COMMUNITY_URL;
-    await vscode.env.openExternal(vscode.Uri.parse(url));
-  }
-
   private async post(message: ExtensionToCommunityMessage): Promise<void> {
     await this.panel?.webview.postMessage(message);
   }
@@ -1743,6 +2100,26 @@ function communityErrorMessage(error: unknown): string {
   return message.length > 0
     ? message
     : "Glow community is temporarily unavailable.";
+}
+
+export function suggestedCommunityHandle(
+  user: Pick<CommunityPanelUser, "id" | "username" | "displayName">,
+  membership: Pick<CommunityMembership, "profile">,
+): string {
+  const seed = membership.profile?.handle ?? user.username ?? user.displayName;
+  const normalized = seed
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/gu, "_")
+    .replace(/^_+|_+$/gu, "")
+    .slice(0, 32)
+    .replace(/_+$/gu, "");
+  if (isCommunityHandle(normalized)) return normalized;
+  return `glow_${user.id.replaceAll("-", "").slice(0, 8)}`;
+}
+
+function isCommunityHandle(value: string): boolean {
+  return /^[a-z0-9](?:[a-z0-9_]{1,30}[a-z0-9])$/u.test(value);
 }
 
 function compareCommunityChatMessages(

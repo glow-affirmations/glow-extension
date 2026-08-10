@@ -23,6 +23,7 @@ import {
   readBinauralPreferences,
   writeBinauralPreferences,
 } from "../webview/src/lib/binauralPreference";
+import { anchoredPopoverHorizontalPosition } from "../webview/src/lib/popoverPosition";
 
 const themePickerSource = readFileSync(
   resolve(import.meta.dir, "../webview/src/components/ThemePicker.svelte"),
@@ -42,6 +43,36 @@ describe("binaural beat preferences", () => {
       '<Icon name="headphones" size="micro" />',
     );
     expect(iconSource).toContain("headphones: HeadphonesIcon");
+  });
+
+  test("keeps the account dropdown inside the viewport after the audio pill shifts its anchor", () => {
+    expect(anchoredPopoverHorizontalPosition(166, 329)).toEqual({
+      left: 12,
+      width: 220,
+    });
+    expect(anchoredPopoverHorizontalPosition(300, 480)).toEqual({
+      left: 80,
+      width: 220,
+    });
+    expect(anchoredPopoverHorizontalPosition(92, 180)).toEqual({
+      left: 12,
+      width: 156,
+    });
+    expect(themePickerSource).toContain("positionAccountMenu");
+    expect(themePickerSource).toContain(
+      'window.addEventListener("resize", handleResize)',
+    );
+  });
+
+  test("keeps the appearance menu focused on its self-explanatory theme choices", () => {
+    expect(themePickerSource).not.toContain('<div class="theme-menu-heading">');
+    expect(themePickerSource).not.toContain("<strong>Appearance</strong>");
+    expect(themePickerSource).not.toContain("<small>Base themes</small>");
+  });
+
+  test("uses the compact Loop pause label for the replay interval", () => {
+    expect(themePickerSource).toContain("<span>Loop pause</span>");
+    expect(themePickerSource).not.toContain("<span>Repeat pause</span>");
   });
 
   test("defaults to silent Calm mode", () => {

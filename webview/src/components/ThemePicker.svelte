@@ -13,6 +13,7 @@
     type BinauralPreset,
     type BinauralPresetDefinition,
   } from "$lib/binauralPreference";
+  import { anchoredPopoverHorizontalPosition } from "$lib/popoverPosition";
   import GlowMark from "./GlowMark.svelte";
   import Icon from "./Icon.svelte";
 
@@ -71,6 +72,7 @@
   let selectedTheme = $state<GlowTheme>("editor");
   let editorTheme = $state<EditorTheme>("dark");
   let accountMenuOpen = $state(false);
+  let accountMenuStyle = $state("");
   let volumeMenuOpen = $state(false);
   let binauralMenuOpen = $state(false);
   let themeMenuOpen = $state(false);
@@ -123,11 +125,32 @@
     }
   }
 
+  function positionAccountMenu(): void {
+    if (!accountButton) return;
+    const buttonBounds = accountButton.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth;
+    const { left, width } = anchoredPopoverHorizontalPosition(
+      buttonBounds.right,
+      viewportWidth,
+    );
+    const top = buttonBounds.bottom + 8;
+    const maxHeight = Math.max(0, window.innerHeight - top - 12);
+    accountMenuStyle = [
+      `top: ${Math.round(top)}px`,
+      `left: ${Math.round(left)}px`,
+      `width: ${Math.round(width)}px`,
+      `max-height: ${Math.round(maxHeight)}px`,
+    ].join("; ");
+  }
+
   function toggleAccountMenu(): void {
     volumeMenuOpen = false;
     binauralMenuOpen = false;
     themeMenuOpen = false;
-    accountMenuOpen = !accountMenuOpen;
+    const opening = !accountMenuOpen;
+    if (opening) positionAccountMenu();
+    accountMenuOpen = opening;
+    if (opening) void tick().then(positionAccountMenu);
   }
 
   function toggleVolumeMenu(): void {
@@ -315,13 +338,18 @@
         accountButton?.focus();
       }
     };
+    const handleResize = () => {
+      if (accountMenuOpen) positionAccountMenu();
+    };
 
     document.addEventListener("pointerdown", handlePointerDown);
     window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", handleResize);
     return () => {
       editorThemeObserver.disconnect();
       document.removeEventListener("pointerdown", handlePointerDown);
       window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", handleResize);
     };
   });
 </script>
@@ -353,6 +381,7 @@
         <div
           id="sol-account-menu"
           class="account-menu"
+          style={accountMenuStyle}
           role="menu"
           in:popoverIn
           out:popoverOut
@@ -480,7 +509,7 @@
           />
           <div class="volume-menu-divider"></div>
           <div class="repeat-pause-setting">
-            <div class="repeat-pause-copy"><span>Repeat pause</span></div>
+            <div class="repeat-pause-copy"><span>Loop pause</span></div>
             <div class="repeat-pause-stepper" role="group" aria-label="Pause between repeats">
               <button
                 type="button"
@@ -615,10 +644,6 @@
           in:popoverIn
           out:popoverOut
         >
-          <div class="theme-menu-heading">
-            <strong>Appearance</strong>
-            <small>Base themes</small>
-          </div>
           <div class="theme-options">
             {#each themes as theme}
               <button
@@ -845,12 +870,13 @@
   }
 
   .account-menu {
-    position: absolute;
+    position: fixed;
     z-index: 120;
-    top: calc(100% + var(--sol-space-2));
-    right: 0;
+    top: 0;
+    left: 0;
     width: min(220px, calc(100vw - 24px));
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
     border: 1px solid var(--sol-border);
     border-radius: var(--sol-radius-surface);
     color: var(--sol-text);
@@ -919,26 +945,6 @@
 
   .theme-menu::-webkit-scrollbar {
     display: none;
-  }
-
-  .theme-menu-heading {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: var(--sol-space-3);
-    padding: var(--sol-space-1) var(--sol-space-2);
-    font-family: var(--sol-font-ui);
-    line-height: var(--sol-leading-snug);
-  }
-
-  .theme-menu-heading strong {
-    font-size: var(--sol-type-label);
-    font-weight: var(--sol-weight-semibold);
-  }
-
-  .theme-menu-heading small {
-    color: var(--sol-muted);
-    font-size: var(--sol-type-caption);
   }
 
   .theme-options {
@@ -1396,9 +1402,8 @@
     opacity: 0.55;
   }
 
-  /* Move popovers into the viewport before their anchored width can clip off-screen. */
+  /* The account menu is measured and viewport-clamped at every width. */
   @media (max-width: 280px) {
-    .account-menu,
     .volume-menu,
     .theme-menu {
       position: fixed;
