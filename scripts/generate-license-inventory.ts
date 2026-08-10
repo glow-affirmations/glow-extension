@@ -8,6 +8,10 @@ type PackageMetadata = {
 };
 
 const packageFiles = new Set<string>();
+const lockfile = readFileSync("bun.lock", "utf8");
+const lockedPackages = new Set(
+  [...lockfile.matchAll(/\["([^"\\]+@[^"\\]+)"/g)].map((match) => match[1]),
+);
 for (const pattern of [
   "node_modules/.bun/*/node_modules/*/package.json",
   "node_modules/.bun/*/node_modules/@*/*/package.json",
@@ -28,6 +32,9 @@ function licenseExpression(metadata: PackageMetadata): string {
 const records = [...packageFiles]
   .map((path) => JSON.parse(readFileSync(path, "utf8")) as PackageMetadata)
   .filter((metadata) => metadata.name && metadata.version)
+  .filter((metadata) =>
+    lockedPackages.has(`${metadata.name}@${metadata.version}`),
+  )
   .map((metadata) => ({
     name: metadata.name!,
     version: metadata.version!,
