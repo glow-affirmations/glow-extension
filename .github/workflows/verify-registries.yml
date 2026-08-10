@@ -9,7 +9,7 @@ on:
         default: "0.1.4"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: verify-registries-${{ inputs.version }}
@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          ASSET="glow-affirmations-${VERSION}.vsix"
+          ASSET="glow-affirmations.vsix"
           mkdir verification
           gh release download "${TAG}" --pattern "${ASSET}" --dir verification
           EXPECTED="$(sha256sum "verification/${ASSET}" | cut -d ' ' -f 1)"
@@ -54,5 +54,3 @@ jobs:
           test -s verification/open-vsx.vsix
           test "$(sha256sum verification/marketplace.vsix | cut -d ' ' -f 1)" = "${EXPECTED}"
           test "$(sha256sum verification/open-vsx.vsix | cut -d ' ' -f 1)" = "${EXPECTED}"
-
-          gh release edit "${TAG}" --draft=false

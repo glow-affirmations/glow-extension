@@ -128,7 +128,7 @@ VSIX can be compared with the copies distributed through extension registries.
 
 ```sh
 sha256sum -c SHA256SUMS
-gh attestation verify glow-affirmations-0.1.4.vsix \
+gh attestation verify glow-affirmations.vsix \
   --repo glow-affirmations/glow-extension
 ```
 
