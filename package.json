@@ -103,7 +103,7 @@
     "typescript": "^5.8.3"
   },
   "dependencies": {
-    "@supabase/supabase-js": "2.110.6"
+    "@supabase/supabase-js": "2.112.2"
   },
   "overrides": {
     "brace-expansion": "5.0.9",
