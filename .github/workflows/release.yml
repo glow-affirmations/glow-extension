@@ -48,20 +48,19 @@ jobs:
 
       - name: Package exactly one VSIX
         run: |
-          VERSION="$(jq -r .version package.json)"
           mkdir -p release
           bunx vsce package \
             --no-dependencies \
             --baseImagesUrl https://justglow.dev \
-            --out "release/glow-affirmations-${VERSION}.vsix"
-          bun run audit:vsix "release/glow-affirmations-${VERSION}.vsix"
-          unzip -Z1 "release/glow-affirmations-${VERSION}.vsix" > release/VSIX_CONTENTS.txt
-          (cd release && sha256sum "glow-affirmations-${VERSION}.vsix" > SHA256SUMS)
+            --out release/glow-affirmations.vsix
+          bun run audit:vsix release/glow-affirmations.vsix
+          unzip -Z1 release/glow-affirmations.vsix > release/VSIX_CONTENTS.txt
+          (cd release && sha256sum glow-affirmations.vsix > SHA256SUMS)
 
       - name: Attest VSIX provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: release/glow-affirmations-*.vsix
+          subject-path: release/glow-affirmations.vsix
 
       - name: Upload release candidate artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -74,7 +73,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Create draft GitHub release
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -86,3 +85,4 @@ jobs:
               --notes-from-tag
           fi
           gh release upload "${GITHUB_REF_NAME}" release/* --clobber
+          gh release edit "${GITHUB_REF_NAME}" --draft=false --prerelease=false
