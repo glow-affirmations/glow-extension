@@ -234,6 +234,28 @@ export type CommunityMemberProfile = {
   isOwner: boolean;
 };
 
+export type CommunityProfileUpdateInput = {
+  handle: string;
+  displayName: string | null;
+  bio: string | null;
+  avatarUrl: string | null;
+};
+
+export type CommunityShareableAffirmation = {
+  id: string;
+  title: string;
+  text: string;
+  kind: "included" | "custom";
+};
+
+export type CommunityShareResult = {
+  status: "shared" | "already_shared";
+  messageId: string;
+};
+
+export type CommunityReportReason =
+  "spam" | "harassment" | "hate" | "self_harm" | "misinformation" | "other";
+
 export type CommunityChatChannelSlug = string;
 
 export type CommunityChatChannel = {
@@ -303,17 +325,37 @@ export type CommunitySnapshot = {
 export type CommunityViewState =
   | { status: "loading" }
   | { status: "signed_out" }
-  | { status: "not_member" }
+  | {
+      status: "not_member";
+      identity: SolUser & { canContribute: boolean };
+      suggestedHandle: string;
+    }
   | { status: "ready"; data: CommunitySnapshot }
   | { status: "error"; message: string };
 
 export type CommunityToExtensionMessage =
   | { type: "communityReady" }
   | { type: "communityNetworkStatus"; online: boolean }
+  | { type: "joinCommunity"; handle: string }
+  | { type: "refreshCommunityMembership" }
   | { type: "loadMoreCommunityAffirmations" }
   | { type: "openCommunityProfile"; handle: string }
   | { type: "closeCommunityProfile" }
   | { type: "loadMoreCommunityProfileAffirmations" }
+  | { type: "updateCommunityProfile"; input: CommunityProfileUpdateInput }
+  | { type: "loadCommunityComposer" }
+  | {
+      type: "shareCommunityAffirmation";
+      sourceAffirmationId: string;
+      clientNonce: string;
+    }
+  | {
+      type: "reportCommunityMessage";
+      messageId: string;
+      reason: CommunityReportReason;
+      details?: string;
+    }
+  | { type: "setCommunityBlock"; userId: string; blocked: boolean }
   | { type: "setCommunitySurfaceTab"; activeTab: "affirmations" | "chats" }
   | {
       type: "selectCommunityChatChannel";
@@ -355,14 +397,19 @@ export type CommunityToExtensionMessage =
   | { type: "playCommunityAffirmation"; messageId: string; requestId: string }
   | { type: "setCommunityReaction"; messageId: string; active: boolean }
   | { type: "addCommunityAffirmationToLibrary"; messageId: string }
-  | { type: "openCommunityOnWeb"; destination: "chats" | "profile" | "compose" }
   | { type: "focusGlow" };
 
 export type ExtensionToCommunityMessage =
   | { type: "communityState"; state: CommunityViewState }
   | { type: "communityPageLoading" }
   | { type: "communityPageLoaded"; page: CommunityFeedPage }
+  | { type: "communityFeedReplaced"; page: CommunityFeedPage }
   | { type: "communityPageFailed"; message: string }
+  | {
+      type: "communityJoinFailed";
+      message: string;
+      handleTaken: boolean;
+    }
   | { type: "communityProfileLoading"; handle: string }
   | {
       type: "communityProfileLoaded";
@@ -371,6 +418,36 @@ export type ExtensionToCommunityMessage =
       mode: "replace" | "append";
     }
   | { type: "communityProfileFailed"; handle: string; message: string }
+  | {
+      type: "communityProfileUpdateSettled";
+      profile: CommunityMemberProfile | null;
+      message: string | null;
+    }
+  | {
+      type: "communityComposerLoaded";
+      items: CommunityShareableAffirmation[];
+    }
+  | { type: "communityComposerFailed"; message: string }
+  | {
+      type: "communityShareSettled";
+      result: CommunityShareResult | null;
+      message: string | null;
+    }
+  | {
+      type: "communityReportSettled";
+      messageId: string;
+      result: {
+        status: "reported" | "already_reported";
+        reportId: string;
+      } | null;
+      message: string | null;
+    }
+  | {
+      type: "communityBlockSettled";
+      userId: string;
+      result: { blocked: boolean } | null;
+      message: string | null;
+    }
   | { type: "communityChatLoading"; channelSlug: CommunityChatChannelSlug }
   | {
       type: "communityChatLoaded";

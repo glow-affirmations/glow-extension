@@ -136,6 +136,182 @@ describe("community client", () => {
     );
   });
 
+  test("joins and updates a Community profile through the shared API", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    const responses = [
+      jsonResponse(201, {
+        result: {
+          status: "joined",
+          profile: {
+            userId: feedItem.author.userId,
+            handle: "miki",
+            displayName: "Miki",
+            avatarUrl: null,
+          },
+          membership: { spaceId: 1, role: "member", status: "active" },
+        },
+      }),
+      jsonResponse(200, {
+        result: {
+          status: "ok",
+          profile: {
+            userId: feedItem.author.userId,
+            handle: "miki_glows",
+            displayName: "Miki",
+            avatarUrl: null,
+            bio: "Building with intention.",
+          },
+        },
+      }),
+    ];
+    const client = new CommunityClient(
+      async (input, init) => {
+        requests.push({
+          url: input.toString(),
+          method: init?.method ?? "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        return responses.shift() ?? jsonResponse(500, {});
+      },
+      async () => "token",
+      async () => null,
+    );
+
+    await expect(
+      client.join({ handle: "miki", displayName: "Miki" }),
+    ).resolves.toMatchObject({ status: "joined", profile: { handle: "miki" } });
+    await expect(
+      client.updateProfile({
+        handle: "miki_glows",
+        displayName: "Miki",
+        bio: "Building with intention.",
+        avatarUrl: null,
+      }),
+    ).resolves.toMatchObject({
+      handle: "miki_glows",
+      bio: "Building with intention.",
+      isOwner: true,
+    });
+    expect(requests).toEqual([
+      {
+        url: "https://justglow.dev/api/v1/community/membership",
+        method: "PUT",
+        body: { handle: "miki", displayName: "Miki" },
+      },
+      {
+        url: "https://justglow.dev/api/v1/community/profile",
+        method: "PUT",
+        body: {
+          handle: "miki_glows",
+          displayName: "Miki",
+          bio: "Building with intention.",
+          avatarUrl: null,
+        },
+      },
+    ]);
+  });
+
+  test("shares, reports, and blocks through server-authorized Community endpoints", async () => {
+    const requests: Array<{ url: string; method: string; body: unknown }> = [];
+    const sourceId = "22222222-2222-4222-8222-222222222222";
+    const nonce = "33333333-3333-4333-8333-333333333333";
+    const responses = [
+      jsonResponse(200, {
+        items: [
+          {
+            id: sourceId,
+            title: "Begin again",
+            text: "I can begin again.",
+            kind: "included",
+          },
+        ],
+      }),
+      jsonResponse(201, {
+        result: { status: "shared", messageId: "91" },
+      }),
+      jsonResponse(201, {
+        result: { status: "reported", reportId: "7" },
+      }),
+      jsonResponse(200, { result: { status: "ok", blocked: true } }),
+      jsonResponse(200, { result: { status: "ok", blocked: false } }),
+    ];
+    const client = new CommunityClient(
+      async (input, init) => {
+        requests.push({
+          url: input.toString(),
+          method: init?.method ?? "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : null,
+        });
+        return responses.shift() ?? jsonResponse(500, {});
+      },
+      async () => "token",
+      async () => null,
+    );
+
+    await expect(client.shareableAffirmations()).resolves.toEqual([
+      {
+        id: sourceId,
+        title: "Begin again",
+        text: "I can begin again.",
+        kind: "included",
+      },
+    ]);
+    await expect(client.shareAffirmation(sourceId, nonce)).resolves.toEqual({
+      status: "shared",
+      messageId: "91",
+    });
+    await expect(
+      client.reportMessage("84", "spam", "Repeated advertising"),
+    ).resolves.toEqual({ status: "reported", reportId: "7" });
+    await expect(
+      client.setBlock(feedItem.author.userId, true),
+    ).resolves.toEqual({
+      blocked: true,
+    });
+    await expect(
+      client.setBlock(feedItem.author.userId, false),
+    ).resolves.toEqual({
+      blocked: false,
+    });
+
+    expect(requests.map(({ url, method }) => ({ url, method }))).toEqual([
+      {
+        url: "https://justglow.dev/api/v1/community/affirmations/shareable",
+        method: "GET",
+      },
+      {
+        url: "https://justglow.dev/api/v1/community/affirmations/share",
+        method: "POST",
+      },
+      {
+        url: "https://justglow.dev/api/v1/community/reports",
+        method: "POST",
+      },
+      {
+        url: `https://justglow.dev/api/v1/community/blocks/${feedItem.author.userId}`,
+        method: "PUT",
+      },
+      {
+        url: `https://justglow.dev/api/v1/community/blocks/${feedItem.author.userId}`,
+        method: "DELETE",
+      },
+    ]);
+  });
+
+  test("preserves the handle conflict code for inline onboarding recovery", async () => {
+    const client = new CommunityClient(
+      async () => jsonResponse(409, { error: "handle_taken" }),
+      async () => "token",
+      async () => null,
+    );
+
+    await expect(client.join({ handle: "miki" })).rejects.toMatchObject({
+      kind: "conflict",
+      code: "handle_taken",
+      message: "That handle is already taken. Try another one.",
+    });
+  });
+
   test("refreshes authentication once after a rejected bearer token", async () => {
     const authorizations: string[] = [];
     const fetchImpl: FetchLike = async (_input, init) => {

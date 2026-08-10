@@ -1,5 +1,14 @@
 # Change Log
 
+## 0.1.5
+
+### Native Community updates and minor UX improvements
+
+- Added native Community joining, profile editing, affirmation sharing, reporting, and blocking so these flows stay inside VS Code.
+- Added deterministic membership refresh and authoritative feed reconciliation after Community changes.
+- Fixed the account dropdown being clipped at compact editor widths.
+- Refined the audio and appearance controls with clearer binaural-beat presentation, headphone indicators, “Loop pause” copy, and a simpler theme menu.
+
 ## 0.1.4
 
 - Added the native Glow community with shared affirmations and realtime channel chats.

@@ -38,6 +38,17 @@ export type CommunityMembership = {
   } | null;
 };
 
+export type CommunityJoinInput = {
+  handle: string;
+  displayName?: string;
+  avatarUrl?: string;
+};
+
+export type CommunityJoinResult = {
+  status: "joined" | "already_joined";
+  profile: NonNullable<CommunityMembership["profile"]>;
+};
+
 export type CommunityMemberProfile = {
   userId: string;
   handle: string;
@@ -45,6 +56,37 @@ export type CommunityMemberProfile = {
   avatarUrl: string | null;
   bio: string | null;
   isOwner: boolean;
+};
+
+export type CommunityProfileUpdateInput = {
+  handle: string;
+  displayName: string | null;
+  bio: string | null;
+  avatarUrl: string | null;
+};
+
+export type CommunityShareableAffirmation = {
+  id: string;
+  title: string;
+  text: string;
+  kind: "included" | "custom";
+};
+
+export type CommunityShareResult = {
+  status: "shared" | "already_shared";
+  messageId: string;
+};
+
+export type CommunityReportReason =
+  "spam" | "harassment" | "hate" | "self_harm" | "misinformation" | "other";
+
+export type CommunityReportResult = {
+  status: "reported" | "already_reported";
+  reportId: string;
+};
+
+export type CommunityBlockResult = {
+  blocked: boolean;
 };
 
 export type CommunityFeedPage = {
@@ -180,11 +222,15 @@ export class CommunityApiError extends Error {
       | "authentication"
       | "not_member"
       | "premium_required"
+      | "conflict"
+      | "restricted"
+      | "not_found"
       | "offline"
       | "service"
       | "invalid_response",
     message: string,
     readonly status = 0,
+    readonly code: string | null = null,
   ) {
     super(message);
     this.name = "CommunityApiError";
@@ -218,6 +264,25 @@ export class CommunityClient {
     };
   }
 
+  async join(input: CommunityJoinInput): Promise<CommunityJoinResult> {
+    const response = await this.request("/api/v1/community/membership", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = await responseJson(response);
+    if (!response.ok) throw responseError(response, payload);
+    const result = recordField(payload, "result");
+    const status = stringField(result, "status");
+    if (status !== "joined" && status !== "already_joined") {
+      throw invalidResponse("The Community join response was not recognized.");
+    }
+    return {
+      status,
+      profile: parseMembershipProfile(recordField(result, "profile")),
+    };
+  }
+
   async affirmations(cursor: string | null = null): Promise<CommunityFeedPage> {
     const query = new URLSearchParams({ limit: "20" });
     if (cursor) query.set("cursor", cursor);
@@ -242,6 +307,103 @@ export class CommunityClient {
     const payload = await responseJson(response);
     if (!response.ok) throw responseError(response, payload);
     return parseMemberProfile(recordField(payload, "profile"));
+  }
+
+  async updateProfile(
+    input: CommunityProfileUpdateInput,
+  ): Promise<CommunityMemberProfile> {
+    const response = await this.request("/api/v1/community/profile", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = await responseJson(response);
+    if (!response.ok) throw responseError(response, payload);
+    const result = recordField(payload, "result");
+    if (stringField(result, "status") !== "ok") {
+      throw invalidResponse("The profile update response was not recognized.");
+    }
+    return parseMemberProfile({
+      ...recordField(result, "profile"),
+      isOwner: true,
+    });
+  }
+
+  async shareableAffirmations(): Promise<CommunityShareableAffirmation[]> {
+    const response = await this.request(
+      "/api/v1/community/affirmations/shareable",
+    );
+    const payload = await responseJson(response);
+    if (!response.ok) throw responseError(response, payload);
+    if (!Array.isArray(payload.items)) {
+      throw invalidResponse("The Community composer did not return a list.");
+    }
+    return payload.items.map(parseShareableAffirmation);
+  }
+
+  async shareAffirmation(
+    sourceAffirmationId: string,
+    clientNonce: string,
+  ): Promise<CommunityShareResult> {
+    const response = await this.request(
+      "/api/v1/community/affirmations/share",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sourceAffirmationId, clientNonce }),
+      },
+    );
+    const payload = await responseJson(response);
+    if (!response.ok) throw responseError(response, payload);
+    const result = recordField(payload, "result");
+    const status = stringField(result, "status");
+    if (status !== "shared" && status !== "already_shared") {
+      throw invalidResponse(
+        "The affirmation share response was not recognized.",
+      );
+    }
+    return { status, messageId: stringField(result, "messageId") };
+  }
+
+  async reportMessage(
+    messageId: string,
+    reason: CommunityReportReason,
+    details?: string,
+  ): Promise<CommunityReportResult> {
+    const response = await this.request("/api/v1/community/reports", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messageId,
+        reason,
+        ...(details ? { details } : {}),
+      }),
+    });
+    const payload = await responseJson(response);
+    if (!response.ok) throw responseError(response, payload);
+    const result = recordField(payload, "result");
+    const status = stringField(result, "status");
+    if (status !== "reported" && status !== "already_reported") {
+      throw invalidResponse("The report response was not recognized.");
+    }
+    return { status, reportId: stringField(result, "reportId") };
+  }
+
+  async setBlock(
+    userId: string,
+    blocked: boolean,
+  ): Promise<CommunityBlockResult> {
+    const response = await this.request(
+      `/api/v1/community/blocks/${encodeURIComponent(userId)}`,
+      { method: blocked ? "PUT" : "DELETE" },
+    );
+    const payload = await responseJson(response);
+    if (!response.ok) throw responseError(response, payload);
+    const result = recordField(payload, "result");
+    if (stringField(result, "status") !== "ok") {
+      throw invalidResponse("The block response was not recognized.");
+    }
+    return { blocked: booleanField(result, "blocked") };
   }
 
   async profileAffirmations(
@@ -538,6 +700,22 @@ function parseMemberProfile(
   };
 }
 
+function parseShareableAffirmation(
+  value: unknown,
+): CommunityShareableAffirmation {
+  const affirmation = asRecord(value, "shareable affirmation");
+  const kind = stringField(affirmation, "kind");
+  if (kind !== "included" && kind !== "custom") {
+    throw invalidResponse("Invalid shareable affirmation kind.");
+  }
+  return {
+    id: stringField(affirmation, "id"),
+    title: stringField(affirmation, "title"),
+    text: stringField(affirmation, "text"),
+    kind,
+  };
+}
+
 function parseAffirmationFeedItem(
   value: unknown,
 ): CommunityAffirmationFeedItem {
@@ -652,13 +830,15 @@ function responseError(
       "authentication",
       "Your Glow session has expired.",
       response.status,
+      code,
     );
   }
   if (response.status === 403 && code === "not_member") {
     return new CommunityApiError(
       "not_member",
-      "Set up your community profile on the web before opening the feed.",
+      "Join the Community before opening this surface.",
       response.status,
+      code,
     );
   }
   if (response.status === 403 && code === "premium_required") {
@@ -666,6 +846,50 @@ function responseError(
       "premium_required",
       "Glow Premium is required to join the conversation.",
       response.status,
+      code,
+    );
+  }
+  if (
+    response.status === 409 ||
+    code === "handle_taken" ||
+    code === "nonce_conflict"
+  ) {
+    return new CommunityApiError(
+      "conflict",
+      code === "handle_taken"
+        ? "That handle is already taken. Try another one."
+        : "That Community change conflicted with a newer request. Please retry.",
+      response.status,
+      code,
+    );
+  }
+  if (
+    code === "account_restricted" ||
+    code === "membership_restricted" ||
+    code === "posting_restricted" ||
+    code === "forbidden"
+  ) {
+    return new CommunityApiError(
+      "restricted",
+      code === "posting_restricted"
+        ? "Your Community posting access is currently restricted."
+        : "This account cannot complete that Community action.",
+      response.status,
+      code,
+    );
+  }
+  if (
+    response.status === 404 ||
+    code === "not_found" ||
+    code === "source_not_found"
+  ) {
+    return new CommunityApiError(
+      "not_found",
+      code === "source_not_found"
+        ? "That affirmation is no longer available to share."
+        : "That Community item is no longer available.",
+      response.status,
+      code,
     );
   }
   if (response.status === 429 || code === "rate_limited") {
@@ -673,6 +897,7 @@ function responseError(
       "service",
       "Slow down for a moment before sending another message.",
       response.status,
+      code,
     );
   }
   return new CommunityApiError(
@@ -681,6 +906,7 @@ function responseError(
       ? "Glow community is temporarily unavailable."
       : "That community request could not be completed.",
     response.status,
+    code,
   );
 }
 
