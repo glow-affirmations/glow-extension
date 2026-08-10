@@ -1,0 +1,58 @@
+name: Verify registry artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable extension version published to both registries
+        required: true
+        default: "0.1.4"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: verify-registries-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download and compare registry packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          ASSET="glow-affirmations-${VERSION}.vsix"
+          mkdir verification
+          gh release download "${TAG}" --pattern "${ASSET}" --dir verification
+          EXPECTED="$(sha256sum "verification/${ASSET}" | cut -d ' ' -f 1)"
+
+          for attempt in $(seq 1 30); do
+            if curl --compressed --fail --location \
+              "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/justglow/vsextensions/glow-affirmations/${VERSION}/vspackage" \
+              --output verification/marketplace.vsix; then
+              break
+            fi
+            sleep 20
+          done
+
+          for attempt in $(seq 1 30); do
+            if curl --fail --location \
+              "https://open-vsx.org/api/justglow/glow-affirmations/${VERSION}/file/justglow.glow-affirmations-${VERSION}.vsix" \
+              --output verification/open-vsx.vsix; then
+              break
+            fi
+            sleep 20
+          done
+
+          test -s verification/marketplace.vsix
+          test -s verification/open-vsx.vsix
+          test "$(sha256sum verification/marketplace.vsix | cut -d ' ' -f 1)" = "${EXPECTED}"
+          test "$(sha256sum verification/open-vsx.vsix | cut -d ' ' -f 1)" = "${EXPECTED}"
+
+          gh release edit "${TAG}" --draft=false

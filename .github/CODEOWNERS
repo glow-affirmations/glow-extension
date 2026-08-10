@@ -1,0 +1,10 @@
+* @0xmiki
+
+/.github/ @0xmiki
+/package.json @0xmiki
+/src/oauthAuth.ts @0xmiki
+/src/oauthProtocol.ts @0xmiki
+/src/extension.ts @0xmiki
+/LICENSE @0xmiki
+/BRAND_ASSET_LICENSE.md @0xmiki
+/TRADEMARKS.md @0xmiki

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+webview/.svelte-kit/
+webview/build/
+release/
+*.vsix
+*.log
+*.env

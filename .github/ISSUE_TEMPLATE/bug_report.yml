@@ -1,0 +1,40 @@
+name: Bug report
+description: Report a reproducible problem in the Glow extension
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include credentials, tokens, private affirmation content, or security vulnerabilities.
+  - type: input
+    id: version
+    attributes:
+      label: Extension version
+      placeholder: 0.1.4
+    validations:
+      required: true
+  - type: input
+    id: editor
+    attributes:
+      label: Editor and operating system
+      placeholder: VS Code 1.x on Linux, macOS, or Windows
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include the expected behavior and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Remove tokens, account data, and private content first.

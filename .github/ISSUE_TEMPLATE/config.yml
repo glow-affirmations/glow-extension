@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Product and account support
+    url: mailto:support@justglow.dev
+    about: Get help with accounts, billing, or private user data.
+  - name: Security report
+    url: https://github.com/glow-affirmations/glow-extension/security/policy
+    about: Read the private vulnerability-reporting policy.
